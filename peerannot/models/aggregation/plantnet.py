@@ -28,6 +28,7 @@ class PlantNet(CrowdModel):
         authors=None,  # path to txt file containing authors id for each task
         scores=None,  # path to txt file containing scores for each task
         threshold_scores=None,  # threshold for scores
+        weight_function="classical",
         **kwargs,
     ):
         """Two Third agreement: accept label reaching two third consensus
@@ -52,6 +53,7 @@ class PlantNet(CrowdModel):
         self.parrots = parrots
         self.alpha = alpha
         self.beta = beta
+        self.weight_function = weight_function
         if self.AI == "ignored":
             for task in self.answers:
                 self.answers[task] = {
@@ -116,7 +118,9 @@ class PlantNet(CrowdModel):
                     self.answers_modif[i] = val
                     i += 1
             self.answers = self.answers_modif
-
+        if self.weight_function == "accuracy":
+            from peerannot.models import Wawa
+            self.wawa = Wawa(self.answers, self.n_classes, sparse=True, n_workers=self.n_workers, **kwargs)
     def get_probas(self):
         warnings.warn(
             """
@@ -180,12 +184,26 @@ class PlantNet(CrowdModel):
         return valid
 
     def get_weights(self):
-        return self.n_j**self.alpha - self.n_j**self.beta + np.log(2.1)
+        if self.weight_function == "classical":
+            return self.n_j**self.alpha - self.n_j**self.beta + np.log(2.1)
+        elif self.weight_function == "difference":
+            self.n_j2 = np.maximum(self.n_j - self.n_j_invalid, 0)
+            return self.n_j2**self.alpha - self.n_j2**self.beta + np.log(2.1)
+        elif self.weight_function == "ratio":
+            self.nj_2 = self.n_j / self.n_proposed
+            return self.n_j2**self.alpha - self.n_j2**self.beta + np.log(2.1)
+        elif self.weight_function == "accuracy":
+            self.n_j2 = self.wawa.worker_score*self.n_j
+            return self.n_j2**self.alpha - self.n_j2**self.beta + np.log(2.1)
 
     def get_n(self, valid, yhat):
         taxa_obs = np.zeros(self.n_workers)
         taxa_votes = np.zeros(self.n_workers)
+        invalid_votes = np.zeros(self.n_workers)
+        invalid_obs = np.zeros(self.n_workers)
         dico_labs_workers = {k: {} for k in range(self.n_workers)}
+        dico_labs_invalid_workers = {k: {} for k in range(self.n_workers)}
+
         for task_id, label_task in zip(self.answers.keys(), yhat):
             for worker, lab_worker in self.answers[task_id].items():
                 if worker != "AI":
@@ -198,6 +216,19 @@ class PlantNet(CrowdModel):
                                 ):
                                     taxa_obs[int(worker)] += 1
                                     dico_labs_workers[int(worker)][lab_worker] = 1
+                    else:
+                        if self.authors[int(task_id)] == int(worker):
+                            if valid[int(task_id)] == 1:
+                                if (
+                                    dico_labs_invalid_workers[int(worker)].get(
+                                        lab_worker, None
+                                    )
+                                    is None
+                                ):
+                                    invalid_obs[int(worker)] += 1
+                                    dico_labs_invalid_workers[int(worker)][
+                                        lab_worker
+                                    ] = 1
         for task_id, label_task in zip(self.answers.keys(), yhat):
             for worker, lab_worker in self.answers[task_id].items():
                 if worker != "AI":
@@ -205,9 +236,22 @@ class PlantNet(CrowdModel):
                         if dico_labs_workers[int(worker)].get(lab_worker, None) is None:
                             taxa_votes[int(worker)] += 1 / 10
                             dico_labs_workers[int(worker)][lab_worker] = 1
+                    else:
+                        if (
+                            dico_labs_invalid_workers[int(worker)].get(lab_worker, None)
+                            is None
+                        ):
+                            invalid_votes[int(worker)] += 1 / 10
+                            dico_labs_invalid_workers[int(worker)][lab_worker] = 1
         self.n_j = np.array(
             [taxa_obs[w] + np.round(taxa_votes[w]) for w in range(self.n_workers)]
         )
+        self.n_j_invalid = np.array(
+            [invalid_obs[w] + np.round(invalid_votes[w]) for w in range(self.n_workers)]
+        )
+        self.n_proposed = self.n_j + self.n_j_invalid
+        if self.weight_function == "accuracy":
+            self.wawa.run()
 
     def run(self, maxiter=100, epsilon=1e-5):  # epsilon = diff in weights
         self.n_task = len(self.answers)
