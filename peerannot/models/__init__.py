@@ -9,6 +9,7 @@ from .aggregation.plantnet import PlantNet
 
 from .aggregation.Wawa import Wawa
 from .aggregation.IWMV import IWMV
+from .aggregation.LIWMV import LIWMV
 
 from .identification.WAUM_perworker import WAUM_perworker
 from .identification.WAUM import WAUM
@@ -31,6 +32,7 @@ agg_strategies = {
     "TwoThird": TwoThird,
     "IWMV": IWMV,
     "Wawa": Wawa,
+    "LIWMV": LIWMV,
 }
 
 agg_deep_strategies = {
